@@ -1,0 +1,70 @@
+🎨 PROMPT PARA IA DE DISEÑO (Claude/ChatGPT/v0.dev)
+Copia y pega esto en otra IA para que diseñe el GUI:
+
+Prompt para diseñar GUI de LECTOR-NCF:
+Code
+Necesito diseñar la interfaz de usuario (UI/UX) de una aplicación de escritorio para gestión de facturas dominicanas.
+
+**Contexto:**
+- Aplicación de escritorio en Python con CustomTkinter
+- Sistema OCR que lee facturas desde WhatsApp
+- Los datos vienen con errores del OCR, por lo que necesitan revisión manual
+- Múltiples empresas con sus facturas
+- Flujo: Recibir → Revisar → Editar → Exportar
+
+**Pantallas necesarias:**
+
+1. **Dashboard Principal:**
+   - Sidebar izquierdo con lista de empresas
+   - Área principal con grid/lista de facturas
+   - Cada factura muestra: miniatura de imagen, NCF, fecha, monto, estado (pendiente/revisada/exportada)
+   - Filtros: Por estado, por fecha, búsqueda por NCF
+   - Botón de exportación masiva
+
+2. **Editor de Factura:**
+   - Split view: Imagen de la factura a la izquierda (zoom habilitado)
+   - Formulario editable a la derecha con campos:
+     * NCF (texto)
+     * RNC (texto)
+     * Razón Social (texto)
+     * Fecha de emisión (date picker)
+     * Subtotal (número)
+     * ITBIS (número)
+     * Total (número)
+   - Indicador de confianza del OCR
+   - Botones: Guardar, Marcar como revisada, Eliminar
+   - Navegación: Anterior/Siguiente factura
+
+3. **Exportador:**
+   - Selector de empresa
+   - Lista de facturas revisadas pendientes de exportar
+   - Checkbox para seleccionar múltiples
+   - Formato de exportación (CSV/JSON)
+   - Preview de datos a exportar
+   - Botón "Exportar seleccionadas"
+
+**Requisitos de diseño:**
+- Estilo moderno, minimalista
+- Colores: Tema claro por defecto (posibilidad de tema oscuro)
+- Acento: Azul o verde para acciones principales
+- Estados claros:
+  * Pendiente: Amarillo/Naranja
+  * Revisada: Verde
+  * Exportada: Gris
+- Iconos para acciones (editar, eliminar, exportar, zoom)
+- Responsive a diferentes tamaños de ventana
+- Feedback visual para acciones (loading, success, error)
+
+**Entregables que necesito:**
+1. Wireframes de las 3 pantallas principales
+2. Paleta de colores sugerida con códigos hex
+3. Layout detallado con medidas (márgenes, padding, tamaños)
+4. Descripción de interacciones y transiciones
+5. Ejemplo de código CustomTkinter para un componente clave (ej: card de factura)
+
+**Inspiración:**
+- Notion (simplicidad)
+- Linear (organización de items)
+- WhatsApp Web (split view de chat)
+
+Genera el diseño completo con todos los detalles visuales y técnicos necesarios para implementarlo en CustomTkinter.

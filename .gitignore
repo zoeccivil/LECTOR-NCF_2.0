@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Credentials - NEVER commit
+credentials/
+!credentials/.gitkeep
+*.json
+!requirements.txt
+!package*.json
+
+# Environment variables
+.env
+.env.local
+
+# Data directories
+data/temp/*
+data/processed/*
+data/exports/*
+!data/temp/.gitkeep
+!data/processed/.gitkeep
+!data/exports/.gitkeep
+
+# Logs
+logs/
+!logs/.gitkeep
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+test_data/facturas_originales/*
+test_data/facturas_procesadas/*
+test_data/resultados/*
+!test_data/**/.gitkeep
+.pytest_cache/
+.coverage
+htmlcov/

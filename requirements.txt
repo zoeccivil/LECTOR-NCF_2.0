@@ -1,0 +1,35 @@
+# Web Framework
+fastapi==0.109.1
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# WhatsApp Integration
+twilio==8.11.1
+
+# Google Cloud Vision OCR
+google-cloud-vision==3.5.0
+
+# Image Processing
+Pillow==12.1.1
+opencv-python==4.9.0.80
+
+# Data Processing
+pandas==2.1.4
+python-dateutil==2.8.2
+
+# Firebase (Optional)
+firebase-admin==6.3.0
+
+# Utilities
+python-dotenv==1.0.0
+loguru==0.7.2
+httpx==0.26.0
+pyperclip==1.8.2
+python-multipart==0.0.9
+python-stdnum>=1.20.0,<1.21.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0

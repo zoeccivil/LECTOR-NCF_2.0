@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  lector-ncf:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/exports:/app/data/exports
+      - ./data/temp:/app/data/temp
+      - ./data/processed:/app/data/processed
+      - ./credentials:/app/credentials
+    env_file:
+      - .env
+    restart: unless-stopped
