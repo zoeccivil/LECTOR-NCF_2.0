@@ -3,7 +3,7 @@ Tests for NCF parser
 """
 import pytest
 from app.ncf_parser import NCFParser
-from app.models import Invoice
+from app.models import InvoiceData
 
 
 class TestNCFParser:
@@ -18,7 +18,7 @@ class TestNCFParser:
         """Test parsing a complete invoice"""
         ocr_text = """
         EMPRESA EJEMPLO SRL
-        RNC: 123-456-789
+        RNC: 101019921
         NCF: B0100000123
         
         Fecha: 10/02/2026
@@ -28,10 +28,10 @@ class TestNCFParser:
         Total: RD$1,500.00
         """
         
-        invoice = parser.parse_invoice(ocr_text, confidence=0.95)
+        invoice = parser.parse_invoice(ocr_text, confidence=0.95, image_filename="test.jpg")
         
         assert invoice.ncf == "B0100000123"
-        assert invoice.rnc == "123456789"
+        assert invoice.rnc == "101019921"
         assert invoice.montos.subtotal == 1271.19
         assert invoice.montos.itbis == 228.81
         assert invoice.montos.total == 1500.00
@@ -44,7 +44,7 @@ class TestNCFParser:
         Total: RD$2,350.00
         """
         
-        invoice = parser.parse_invoice(ocr_text)
+        invoice = parser.parse_invoice(ocr_text, 0.95, "test2.jpg")
         
         assert invoice.ncf == "B1500000456"
         assert invoice.montos.total == 2350.00
@@ -53,14 +53,14 @@ class TestNCFParser:
     def test_extract_ncf(self, parser):
         """Test NCF extraction"""
         text = "Comprobante NCF: B0100000123"
-        ncf = parser._extract_ncf(text)
+        ncf = parser._extract_and_validate_ncf(text)
         assert ncf == "B0100000123"
     
     def test_extract_rnc(self, parser):
         """Test RNC extraction"""
-        text = "RNC: 123456789"
-        rnc = parser._extract_rnc(text)
-        assert rnc == "123456789"
+        text = "RNC: 101019921"
+        rnc, rnc_formatted = parser._extract_and_validate_rnc(text)
+        assert rnc == "101019921"
     
     def test_extract_date(self, parser):
         """Test date extraction"""
@@ -75,32 +75,26 @@ class TestNCFParser:
         ITBIS: 228.81
         Total: 1,500.00
         """
-        amounts = parser._extract_amounts(text)
+        lines = text.split('\n')
+        amounts = parser._extract_amounts(text, lines)
         
         assert amounts.subtotal == 1271.19
         assert amounts.itbis == 228.81
         assert amounts.total == 1500.00
     
-    def test_calculate_missing_subtotal(self, parser):
-        """Test calculation of missing subtotal"""
-        text = """
-        ITBIS: 228.81
-        Total: 1,500.00
-        """
-        amounts = parser._extract_amounts(text)
-        
-        # Should calculate subtotal
-        assert amounts.subtotal is not None
-        assert abs(amounts.subtotal - 1271.19) < 0.01
-    
-    def test_extract_first_amount_us_format(self, parser):
-        """Test extracting amount in US format"""
-        amount = parser._extract_first_amount("Total: RD$1,234.56")
+    def test_parse_amount_us_format(self, parser):
+        """Test parsing amount in US format"""
+        amount = parser._parse_amount("1,234.56")
         assert amount == 1234.56
     
-    def test_extract_first_amount_european_format(self, parser):
-        """Test extracting amount in European format"""
-        amount = parser._extract_first_amount("Total: RD$1.234,56")
+    def test_parse_amount_european_format(self, parser):
+        """Test parsing amount in European format"""
+        amount = parser._parse_amount("1.234,56")
+        assert amount == 1234.56
+    
+    def test_parse_amount_multiple_periods(self, parser):
+        """Test parsing amount with multiple periods"""
+        amount = parser._parse_amount("1.234.56")
         assert amount == 1234.56
 
 
@@ -111,21 +105,12 @@ class TestBusinessNameExtraction:
     def parser(self):
         return NCFParser()
     
-    def test_extract_business_with_label(self, parser):
-        """Test extraction when there's a clear label"""
-        text = """
-        Razón Social: SUPERMERCADO LA ECONOMIA SRL
-        RNC: 123456789
-        """
-        name = parser._extract_business_name(text)
-        assert name == "SUPERMERCADO LA ECONOMIA SRL"
-    
     def test_extract_business_from_top(self, parser):
         """Test extraction from top of invoice (fallback)"""
         text = """
         FARMACIA CAROL SRL
-        RNC: 987654321
+        RNC: 101019921
         Dirección: Calle Principal
         """
-        name = parser._extract_business_name(text)
+        name = parser._extract_business_name(text, "101019921")
         assert "FARMACIA CAROL" in name

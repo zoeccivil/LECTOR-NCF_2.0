@@ -1,9 +1,10 @@
 """
 NCF Parser with python-stdnum validation
 Improved accuracy for Dominican Republic invoices
+Enhanced with patterns from facturas-opensource
 """
 import re
-from typing import Optional
+from typing import Optional, List, Tuple
 from datetime import datetime
 from loguru import logger
 
@@ -13,7 +14,7 @@ from stdnum.do import rnc as stdnum_rnc
 from stdnum.do import cedula as stdnum_cedula
 from stdnum.exceptions import ValidationError, InvalidFormat, InvalidChecksum, InvalidLength
 
-from app.models import Invoice, Montos
+from app.models import InvoiceData, Montos, TipoNCF
 
 
 class NCFParser:
@@ -22,7 +23,7 @@ class NCFParser:
     def __init__(self):
         self.invoice = None
         
-    def parse_invoice(self, ocr_text: str, confidence: float, image_filename: str) -> Invoice:
+    def parse_invoice(self, ocr_text: str, confidence: float, image_filename: str) -> InvoiceData:
         """
         Parse invoice from OCR text with python-stdnum validation
         
@@ -32,23 +33,33 @@ class NCFParser:
             image_filename: Source image filename
             
         Returns:
-            Invoice object with extracted and validated data
+            InvoiceData object with extracted and validated data
         """
         logger.info("Starting invoice parsing with python-stdnum validation")
         
         # Create invoice object
-        self.invoice = Invoice(
+        self.invoice = InvoiceData(
             image_filename=image_filename,
-            ocr_confidence=confidence
+            ocr_confidence=confidence,
+            ocr_text=ocr_text
         )
         
         # Extract and validate fields
         self.invoice.ncf = self._extract_and_validate_ncf(ocr_text)
         self.invoice.tipo_ncf = self._extract_ncf_type(self.invoice.ncf)
-        self.invoice.rnc = self._extract_and_validate_rnc(ocr_text)
+        self.invoice.rnc, self.invoice.rnc_formatted = self._extract_and_validate_rnc(ocr_text)
+        self.invoice.cedula = self._extract_cedula(ocr_text)
         self.invoice.empresa = self._extract_business_name(ocr_text, self.invoice.rnc)
         self.invoice.fecha = self._extract_date(ocr_text)
-        self.invoice.montos = self._extract_amounts(ocr_text)
+        
+        # Extract amounts
+        lines = ocr_text.split('\n')
+        self.invoice.montos = self._extract_amounts(ocr_text, lines)
+        
+        # Calculate confidence and detect anomalies
+        self.invoice.confidence_score = self._calculate_confidence_score()
+        self.invoice.audit_flags = self._detect_anomalies()
+        self.invoice.processed_at = datetime.now()
         
         # Log results
         self._log_extraction_summary()
@@ -114,7 +125,7 @@ class NCFParser:
         logger.error("❌ No se encontró NCF válido")
         return None
     
-    def _extract_ncf_type(self, ncf: Optional[str]) -> Optional[str]:
+    def _extract_ncf_type(self, ncf: Optional[str]) -> Optional[TipoNCF]:
         """
         Extract NCF type from validated NCF
         
@@ -130,14 +141,24 @@ class NCFParser:
         # Primeros 3 caracteres para formato antiguo (A02, P02)
         if len(ncf) >= 3:
             tipo = ncf[:3].upper()
-            logger.info(f"Tipo NCF extraído: {tipo}")
-            return tipo
+            try:
+                tipo_enum = TipoNCF(tipo)
+                logger.info(f"Tipo NCF extraído: {tipo}")
+                return tipo_enum
+            except ValueError:
+                logger.warning(f"Tipo NCF desconocido: {tipo}")
+                return None
         
         return None
     
-    def _extract_and_validate_rnc(self, text: str) -> Optional[str]:
+    def _extract_and_validate_rnc(self, text: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        Extract and validate RNC using python-stdnum
+        Extract and validate RNC - RETORNA (rnc_limpio, rnc_formateado)
+        
+        Mejoras:
+        - Busca RNC con Y sin guiones
+        - Valida con python-stdnum
+        - Retorna ambas versiones (limpia y formateada)
         
         Formatos soportados:
         - 101019921 (9 dígitos sin guiones)
@@ -176,8 +197,8 @@ class NCFParser:
                     # Formatear para consistencia
                     formatted_rnc = stdnum_rnc.format(validated_rnc)
                     
-                    logger.info(f"✅ RNC VÁLIDO: {validated_rnc} (formateado: {formatted_rnc})")
-                    return validated_rnc
+                    logger.success(f"✅ RNC válido: {validated_rnc} ({formatted_rnc})")
+                    return validated_rnc, formatted_rnc
                     
                 except InvalidFormat as e:
                     logger.warning(f"❌ RNC formato inválido: {rnc_candidate}")
@@ -189,8 +210,9 @@ class NCFParser:
                         # python-stdnum maneja whitelist internamente
                         clean_rnc = rnc_candidate.replace('-', '').replace(' ', '')
                         if stdnum_rnc.validate(clean_rnc):
-                            logger.info(f"✅ RNC VÁLIDO (whitelist): {clean_rnc}")
-                            return clean_rnc
+                            formatted = stdnum_rnc.format(clean_rnc)
+                            logger.success(f"✅ RNC válido (whitelist): {clean_rnc} ({formatted})")
+                            return clean_rnc, formatted
                     except:
                         logger.warning(f"❌ RNC checksum inválido: {rnc_candidate}")
                         continue
@@ -204,7 +226,7 @@ class NCFParser:
                     continue
         
         logger.error("❌ No se encontró RNC válido")
-        return None
+        return None, None
     
     def _extract_business_name(self, text: str, rnc: Optional[str] = None) -> Optional[str]:
         """
@@ -248,6 +270,33 @@ class NCFParser:
             return empresa.upper()
         
         logger.warning("❌ No se pudo extraer nombre de empresa")
+        return None
+    
+    def _extract_cedula(self, text: str) -> Optional[str]:
+        """
+        Extracción de Cédula (documento de identidad dominicano)
+        
+        Formatos:
+        - 402-1234567-8
+        - 40212345678
+        """
+        patterns = [
+            r'C[ée]dula[:\s]+(\d{3}-\d{7}-\d{1})',
+            r'C[ée]dula[:\s]+(\d{11})',
+            r'ID[:\s]+(\d{3}-\d{7}-\d{1})',
+            r'ID[:\s]+(\d{11})',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                try:
+                    validated = stdnum_cedula.validate(match.group(1))
+                    logger.success(f"✅ Cédula válida: {validated}")
+                    return validated
+                except ValidationError:
+                    continue
+        
         return None
     
     def _extract_date(self, text: str) -> Optional[str]:
@@ -306,38 +355,35 @@ class NCFParser:
         logger.warning("❌ No se pudo extraer fecha")
         return None
     
-    def _extract_amounts(self, text: str) -> Montos:
-        """Extract monetary amounts from invoice text"""
+    def _extract_amounts(self, text: str, lines: List[str]) -> Montos:
+        """
+        Extracción ROBUSTA de montos
+        
+        Estrategias:
+        1. Inline: "TOTAL RD$1,804.80"
+        2. Multi-línea: "TOTAL\nRD$ 1,804.80"
+        3. Con etiquetas variadas: "TOTAL A PAGAR", "MONTO TOTAL"
+        4. Ultimo número grande en factura (fallback)
+        """
         montos = Montos()
-        lines = text.split('\n')
         
         # ESTRATEGIA 1: TOTAL en la misma línea
         total_patterns = [
-            r'TOTAL[:\s]+(?:RD\$|RD|[$]|DOP)?\s*([\d,\.]+)',
-            r'(?:TOTAL\s+A\s+PAGAR)[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)',
-            r'(?:MONTO\s+TOTAL)[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)',
+            r'\bTOTAL[:\s]+(?:RD\$|RD|[$]|DOP)?\s*([\d,\.]+)',
+            r'(?:TOTAL\s+A\s+PAGAR)[:\s]*(?:RD\$|RD|[$])?\s*([\d,\.]+)',
+            r'(?:MONTO\s+TOTAL)[:\s]*(?:RD\$|RD|[$])?\s*([\d,\.]+)',
         ]
         
         for pattern in total_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                total_str = match.group(1)
-                # Limpiar comas
-                total_str = total_str.replace(',', '')
-                
-                # Manejar punto como separador de miles (ej: 1.804.80)
-                if total_str.count('.') > 1:
-                    # Remover todos los puntos excepto el último (decimal)
-                    parts = total_str.split('.')
-                    if len(parts) > 1:
-                        # Unir todos excepto el último con nada, último es decimal
-                        total_str = ''.join(parts[:-1]) + '.' + parts[-1]
-                
                 try:
-                    montos.total = float(total_str)
-                    logger.info(f"✅ Total encontrado (inline): RD${montos.total:,.2f}")
-                    break
-                except ValueError:
+                    amount = self._parse_amount(match.group(1))
+                    if amount > 10:
+                        logger.success(f"✅ Total (inline): RD${amount:,.2f}")
+                        montos.total = amount
+                        break
+                except:
                     continue
         
         # ESTRATEGIA 2: TOTAL en múltiples líneas
@@ -347,41 +393,38 @@ class NCFParser:
                     # Buscar monto en las siguientes 3 líneas
                     for j in range(i, min(i + 4, len(lines))):
                         next_line = lines[j]
+                        
                         # Buscar patrón de monto
-                        amount_patterns = [
-                            r'(?:RD\$|RD|[$]|DOP)\s*([\d,\.]+)',
-                            r'^\s*([\d,\.]+)\s*$',
-                            r'Monto\s*\$?([\d,\.]+)',
-                        ]
-                        
-                        for pattern in amount_patterns:
-                            match = re.search(pattern, next_line)
-                            if match:
-                                total_str = match.group(1)
-                                # Limpiar comas
-                                total_str = total_str.replace(',', '')
-                                
-                                # Manejar punto como separador de miles
-                                if total_str.count('.') > 1:
-                                    parts = total_str.split('.')
-                                    if len(parts) > 1:
-                                        total_str = ''.join(parts[:-1]) + '.' + parts[-1]
-                                
-                                try:
-                                    total = float(total_str)
-                                    # Validar que sea un monto razonable (> 10)
-                                    if total > 10:
-                                        montos.total = total
-                                        logger.info(f"✅ Total encontrado (multiline): RD${montos.total:,.2f}")
-                                        break
-                                except ValueError:
-                                    continue
-                        
-                        if montos.total:
-                            break
+                        amount_match = re.search(r'(?:RD\$|RD|[$]|DOP)?\s*([\d,\.]+)', next_line)
+                        if amount_match:
+                            try:
+                                amount = self._parse_amount(amount_match.group(1))
+                                if amount > 10:
+                                    logger.success(f"✅ Total (multiline): RD${amount:,.2f}")
+                                    montos.total = amount
+                                    break
+                            except:
+                                continue
                     
                     if montos.total:
                         break
+        
+        # ESTRATEGIA 3: Fallback - número más grande
+        if not montos.total:
+            all_amounts = re.findall(r'[\d,\.]+', text)
+            amounts_parsed = []
+            for amt_str in all_amounts:
+                try:
+                    amount = self._parse_amount(amt_str)
+                    if 100 < amount < 1000000:  # Rango razonable
+                        amounts_parsed.append(amount)
+                except:
+                    continue
+            
+            if amounts_parsed:
+                max_amount = max(amounts_parsed)
+                logger.warning(f"⚠️ Total por fallback (mayor monto): RD${max_amount:,.2f}")
+                montos.total = max_amount
         
         # SUBTOTAL
         subtotal_patterns = [
@@ -392,47 +435,164 @@ class NCFParser:
         for pattern in subtotal_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                subtotal_str = match.group(1).replace(',', '')
                 try:
-                    montos.subtotal = float(subtotal_str)
-                    logger.info(f"✅ Subtotal encontrado: RD${montos.subtotal:,.2f}")
+                    montos.subtotal = self._parse_amount(match.group(1))
+                    logger.success(f"✅ Subtotal encontrado: RD${montos.subtotal:,.2f}")
                     break
                 except ValueError:
                     continue
         
         # ITBIS
         itbis_patterns = [
-            r'ITBIS[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)',
-            r'(?:18|16)%?\s*ITBIS[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)',
+            r'ITBIS[:\s\(]*(?:\d+%\))?[:\s]*(?:RD\$|RD|[$])?\s*([\d,\.]+)',
+            r'(?:18|16)%?\s*ITBIS[:\s]*(?:RD\$|RD|[$])?\s*([\d,\.]+)',
             r'(?:IMPUESTO|TAX)[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)',
         ]
         
         for pattern in itbis_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                itbis_str = match.group(1).replace(',', '')
                 try:
-                    montos.itbis = float(itbis_str)
-                    logger.info(f"✅ ITBIS encontrado: RD${montos.itbis:,.2f}")
+                    montos.itbis = self._parse_amount(match.group(1))
+                    logger.success(f"✅ ITBIS encontrado: RD${montos.itbis:,.2f}")
                     break
                 except ValueError:
                     continue
         
         return montos
     
+    def _parse_amount(self, amount_str: str) -> float:
+        """
+        Parse monto con manejo inteligente de separadores
+        
+        Casos:
+        - 1,804.80 → 1804.80 (coma miles, punto decimal)
+        - 1.804,80 → 1804.80 (punto miles, coma decimal) 
+        - 1.804.80 → 1804.80 (punto miles, punto decimal)
+        - 1804.80 → 1804.80 (sin separador de miles)
+        """
+        # Quitar espacios
+        amount_str = amount_str.strip()
+        
+        # Caso 1: Formato europeo (1.804,80)
+        if ',' in amount_str and '.' in amount_str:
+            # Si la coma viene después del punto → europeo
+            if amount_str.rindex(',') > amount_str.rindex('.'):
+                # Reemplazar punto por nada, coma por punto
+                amount_str = amount_str.replace('.', '').replace(',', '.')
+            # Si el punto viene después → americano estándar
+            else:
+                amount_str = amount_str.replace(',', '')
+        
+        # Caso 2: Solo comas (puede ser miles o decimal)
+        elif ',' in amount_str:
+            # Si hay solo una coma y está en las últimas 3 posiciones → decimal europeo
+            # Por ejemplo: "123,45" (comma at position 3, len=6, so 3 >= 6-3 = 3) → decimal
+            # Por ejemplo: "1,234" (comma at position 1, len=5, so 1 < 5-3 = 2) → miles
+            comma_pos = amount_str.index(',')
+            if comma_pos > len(amount_str) - 4:  # Comma in last 3 positions (decimal)
+                amount_str = amount_str.replace(',', '.')
+            # Si hay múltiples comas o está lejos del final → separador de miles
+            else:
+                amount_str = amount_str.replace(',', '')
+        
+        # Caso 3: Múltiples puntos (1.804.80) → quitar todos excepto último
+        elif amount_str.count('.') > 1:
+            parts = amount_str.split('.')
+            amount_str = ''.join(parts[:-1]) + '.' + parts[-1]
+        
+        return float(amount_str)
+    
+    def _calculate_confidence_score(self) -> float:
+        """
+        Calcula score de confianza basado en campos extraídos
+        
+        Pesos:
+        - NCF: 30%
+        - RNC: 25%
+        - Total: 25%
+        - Empresa: 10%
+        - Fecha: 10%
+        """
+        score = 0.0
+        weights = {
+            'ncf': 0.30,
+            'rnc': 0.25,
+            'total': 0.25,
+            'empresa': 0.10,
+            'fecha': 0.10,
+        }
+        
+        if self.invoice.ncf:
+            score += weights['ncf']
+        if self.invoice.rnc:
+            score += weights['rnc']
+        if self.invoice.montos.total:
+            score += weights['total']
+        if self.invoice.empresa:
+            score += weights['empresa']
+        if self.invoice.fecha:
+            score += weights['fecha']
+        
+        return round(score, 2)
+    
+    def _detect_anomalies(self) -> List[str]:
+        """
+        Detecta anomalías en factura
+        
+        Flags:
+        - total_mismatch: Total extraído ≠ calculado
+        - itbis_anomaly: ITBIS no es ~18% del subtotal
+        - low_confidence: Score < 50%
+        - missing_required: Falta NCF o RNC
+        """
+        flags = []
+        
+        # Total no coincide con cálculo
+        if self.invoice.montos.total and not self.invoice.montos.total_matches:
+            flags.append("total_mismatch")
+            logger.warning(f"⚠️ Total extraído ({self.invoice.montos.total}) ≠ calculado ({self.invoice.montos.calculated_total})")
+        
+        # ITBIS anómalo (debe ser ~18%)
+        if self.invoice.montos.subtotal and self.invoice.montos.itbis:
+            expected_itbis = self.invoice.montos.subtotal * 0.18
+            diff = abs(self.invoice.montos.itbis - expected_itbis)
+            if diff > 5:  # Más de RD$5 de diferencia
+                flags.append("itbis_anomaly")
+                logger.warning(f"⚠️ ITBIS anómalo: esperado {expected_itbis:.2f}, encontrado {self.invoice.montos.itbis:.2f}")
+        
+        # Confidence muy bajo
+        if self.invoice.confidence_score and self.invoice.confidence_score < 0.50:
+            flags.append("low_confidence")
+            logger.warning(f"⚠️ Confianza baja: {self.invoice.confidence_score:.0%}")
+        
+        # Campos requeridos faltantes
+        if not self.invoice.ncf:
+            flags.append("missing_ncf")
+        if not self.invoice.rnc:
+            flags.append("missing_rnc")
+        
+        return flags
+    
     def _log_extraction_summary(self):
         """Log summary of extraction results"""
         logger.info("=" * 70)
         logger.info("RESUMEN DE EXTRACCIÓN:")
         logger.info("=" * 70)
-        logger.info(f"NCF:      {self.invoice.ncf or '❌ NO ENCONTRADO'}")
-        logger.info(f"Tipo NCF: {self.invoice.tipo_ncf or '❌ NO ENCONTRADO'}")
-        logger.info(f"RNC:      {self.invoice.rnc or '❌ NO ENCONTRADO'}")
-        logger.info(f"Empresa:  {self.invoice.empresa or '❌ NO ENCONTRADO'}")
-        logger.info(f"Fecha:    {self.invoice.fecha or '❌ NO ENCONTRADO'}")
-        logger.info(f"Subtotal: RD${self.invoice.montos.subtotal:,.2f}" if self.invoice.montos.subtotal else "Subtotal: ❌ NO ENCONTRADO")
-        logger.info(f"ITBIS:    RD${self.invoice.montos.itbis:,.2f}" if self.invoice.montos.itbis else "ITBIS:    ❌ NO ENCONTRADO")
-        logger.info(f"Total:    RD${self.invoice.montos.total:,.2f}" if self.invoice.montos.total else "Total:    ❌ NO ENCONTRADO")
+        logger.info(f"NCF:               {self.invoice.ncf or '❌ NO ENCONTRADO'}")
+        logger.info(f"Tipo NCF:          {self.invoice.tipo_ncf.value if self.invoice.tipo_ncf else '❌ NO ENCONTRADO'}")
+        logger.info(f"RNC:               {self.invoice.rnc or '❌ NO ENCONTRADO'}")
+        logger.info(f"RNC (formateado):  {self.invoice.rnc_formatted or '❌'}")
+        logger.info(f"Cédula:            {self.invoice.cedula or '-'}")
+        logger.info(f"Empresa:           {self.invoice.empresa or '❌ NO ENCONTRADO'}")
+        logger.info(f"Fecha:             {self.invoice.fecha or '❌ NO ENCONTRADO'}")
+        logger.info(f"Subtotal:          RD${self.invoice.montos.subtotal:,.2f}" if self.invoice.montos.subtotal else "Subtotal:          ❌")
+        logger.info(f"ITBIS:             RD${self.invoice.montos.itbis:,.2f}" if self.invoice.montos.itbis else "ITBIS:             ❌")
+        logger.info(f"Total:             RD${self.invoice.montos.total:,.2f}" if self.invoice.montos.total else "Total:             ❌")
+        logger.info(f"\n🎯 CONFIANZA:      {self.invoice.confidence_score:.0%}" if self.invoice.confidence_score else "\n🎯 CONFIANZA:      N/A")
+        logger.info(f"✅ VÁLIDA:         {'SÍ' if self.invoice.is_valid else 'NO'}")
+        if self.invoice.audit_flags:
+            logger.info(f"⚠️ ALERTAS:        {', '.join(self.invoice.audit_flags)}")
         logger.info("=" * 70)
 
 
