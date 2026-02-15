@@ -96,7 +96,7 @@ class InvoiceData:
     validation_errors: List[str] = field(default_factory=list)
     
     # Timestamps
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now())
     processed_at: Optional[datetime] = None
     
     # Source

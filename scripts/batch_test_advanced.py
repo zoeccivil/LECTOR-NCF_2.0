@@ -13,7 +13,15 @@ from datetime import datetime
 
 
 def run_batch_test(test_dir: str = "test_data/facturas_originales"):
-    """Ejecutar test en batch con todas las facturas"""
+    """
+    Ejecutar test en batch con todas las facturas
+    
+    Args:
+        test_dir: Directorio con imágenes de facturas
+        
+    Output:
+        - CSV file saved to current working directory: test_results_YYYYMMDD_HHMMSS.csv
+    """
     
     test_path = Path(test_dir)
     images = list(test_path.glob("*.jp*g")) + list(test_path.glob("*.png"))

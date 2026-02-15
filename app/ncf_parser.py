@@ -487,8 +487,10 @@ class NCFParser:
         # Caso 2: Solo comas (puede ser miles o decimal)
         elif ',' in amount_str:
             # Si hay solo una coma y está en las últimas 3 posiciones → decimal europeo
+            # Por ejemplo: "123,45" (comma at position 3, len=6, so 3 >= 6-3 = 3) → decimal
+            # Por ejemplo: "1,234" (comma at position 1, len=5, so 1 < 5-3 = 2) → miles
             comma_pos = amount_str.index(',')
-            if comma_pos >= len(amount_str) - 3:
+            if comma_pos > len(amount_str) - 4:  # Comma in last 3 positions (decimal)
                 amount_str = amount_str.replace(',', '.')
             # Si hay múltiples comas o está lejos del final → separador de miles
             else:
