@@ -215,3 +215,28 @@ class ProcessingResult(BaseModel):
     invoice: Optional[Invoice] = Field(None, description="Extracted invoice data")
     error_message: Optional[str] = Field(None, description="Error message if failed")
     warnings: list[str] = Field(default_factory=list, description="Processing warnings")
+
+
+# Adapter functions for compatibility
+def invoice_data_to_pydantic(invoice_data: InvoiceData) -> Invoice:
+    """
+    Convert InvoiceData (dataclass) to Pydantic Invoice model
+    For backward compatibility with existing code
+    """
+    return Invoice(
+        ncf=invoice_data.ncf,
+        rnc=invoice_data.rnc,
+        razon_social=invoice_data.empresa,
+        fecha_emision=invoice_data.fecha,
+        montos=InvoiceAmounts(
+            subtotal=invoice_data.montos.subtotal,
+            itbis=invoice_data.montos.itbis,
+            total=invoice_data.montos.total,
+        ),
+        metadata=InvoiceMetadata(
+            imagen_original=invoice_data.image_filename,
+            confianza_ocr=invoice_data.ocr_confidence,
+            origen=invoice_data.source,
+        ),
+        texto_completo=invoice_data.ocr_text,
+    )
