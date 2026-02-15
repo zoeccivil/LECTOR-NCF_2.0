@@ -5,14 +5,66 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime
 from uuid import uuid4
+from enum import Enum
 
 
-class InvoiceAmounts(BaseModel):
-    """Invoice monetary amounts"""
-    subtotal: Optional[float] = Field(None, description="Amount before tax")
-    itbis: Optional[float] = Field(None, description="ITBIS tax (18%)")
-    total: Optional[float] = Field(None, description="Total amount")
-    moneda: str = Field("DOP", description="Currency code")
+class TipoNCF(str, Enum):
+    """Tipos de NCF según DGII"""
+    E31 = "E31"  # e-CF
+    E32 = "E32"  # e-CF Gubernamental
+    E33 = "E33"  # e-CF para Exportaciones
+    E34 = "E34"  # e-CF para Pagos al Exterior
+    E41 = "E41"  # e-CF Nota de Crédito
+    E43 = "E43"  # e-CF Nota de Débito
+    E44 = "E44"  # e-CF Regímenes Especiales
+    E45 = "E45"  # e-CF Gubernamental Regímenes Especiales
+    E47 = "E47"  # e-CF para Compras
+    B01 = "B01"  # Facturas Crédito Fiscal
+    B02 = "B02"  # Facturas Consumidores Finales
+    B14 = "B14"  # Notas de Crédito
+    B15 = "B15"  # Notas de Débito
+    B16 = "B16"  # Facturas Regímenes Especiales
+
+
+class Montos(BaseModel):
+    """
+    Montos de factura con validaciones automáticas
+    Alias for InvoiceAmounts for backward compatibility
+    """
+    subtotal: Optional[float] = Field(None, description="Monto antes de impuesto")
+    itbis: Optional[float] = Field(None, description="ITBIS (18%)")
+    total: Optional[float] = Field(None, description="Monto total")
+    descuento: Optional[float] = Field(None, description="Descuento aplicado")
+    moneda: str = Field("DOP", description="Código de moneda")
+    
+    @property
+    def is_complete(self) -> bool:
+        """Verifica si todos los montos principales están presentes"""
+        return all([self.subtotal is not None, self.itbis is not None, self.total is not None])
+    
+    @property
+    def calculated_total(self) -> Optional[float]:
+        """Calcula total teórico: subtotal + itbis - descuento"""
+        if self.subtotal is not None and self.itbis is not None:
+            calc = self.subtotal + self.itbis
+            if self.descuento:
+                calc -= self.descuento
+            return round(calc, 2)
+        return None
+    
+    @property
+    def total_matches(self) -> bool:
+        """Verifica coincidencia entre total declarado y calculado (tolerancia RD$1)"""
+        if self.total and self.calculated_total:
+            diff = abs(self.total - self.calculated_total)
+            return diff < 1.00
+        return False
+
+
+# Alias for backward compatibility
+class InvoiceAmounts(Montos):
+    """Invoice monetary amounts (alias for Montos)"""
+    pass
 
 
 class InvoiceMetadata(BaseModel):
@@ -28,12 +80,17 @@ class Invoice(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()), description="Unique invoice ID")
     fecha_procesamiento: datetime = Field(default_factory=lambda: datetime.now(), description="Processing timestamp")
     ncf: Optional[str] = Field(None, description="Número de Comprobante Fiscal")
+    tipo_ncf: Optional[str] = Field(None, description="Tipo de NCF (E31, B01, etc.)")
     rnc: Optional[str] = Field(None, description="Registro Nacional del Contribuyente")
     razon_social: Optional[str] = Field(None, description="Business name")
+    empresa: Optional[str] = Field(None, description="Business name (alias for razon_social)")
     fecha_emision: Optional[str] = Field(None, description="Invoice issue date")
-    montos: InvoiceAmounts = Field(default_factory=InvoiceAmounts, description="Invoice amounts")
+    fecha: Optional[str] = Field(None, description="Invoice date (alias for fecha_emision)")
+    montos: Montos = Field(default_factory=Montos, description="Invoice amounts")
     metadata: InvoiceMetadata = Field(default_factory=InvoiceMetadata, description="Processing metadata")
     texto_completo: Optional[str] = Field(None, description="Full OCR text (for debugging)")
+    image_filename: Optional[str] = Field(None, description="Source image filename")
+    ocr_confidence: Optional[float] = Field(None, description="OCR confidence score")
     
     @field_validator('ncf')
     @classmethod
