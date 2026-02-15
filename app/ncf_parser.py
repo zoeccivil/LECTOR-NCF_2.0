@@ -461,21 +461,27 @@ class NCFParser:
         # STEP 2: Extract TOTAL (with filters for foreign currency and invoice numbers)
         # Prioritized patterns for TOTAL
         total_patterns = [
-            # 1. TOTAL in RD$ (highest priority)
-            (r'TOTAL\s*[:\s]+(?:RD\$|RD)\s*([\d,\.]+)', 1),
-            (r'TOTAL\s+A\s+PAGAR\s*[:\s]+(?:RD\$|RD)?\s*([\d,\.]+)', 1),
+            # 1. TOTAL in RD$ (highest priority) - explicit currency
+            # Use \b for word boundary to avoid matching "Subtotal"
+            (r'\bTOTAL\s+en\s+RD\$\s*:\s*RD\$\s*([\d,\.]+)', 1),
+            (r'\bTOTAL\s*[:\s]+RD\$\s*([\d,\.]+)', 1),
+            (r'\bTOTAL\s*[:\s]+RD\s+([\d,\.]+)', 1),
+            (r'\bTOTAL\s+A\s+PAGAR\s*[:\s]+(?:RD\$|RD)\s*([\d,\.]+)', 1),
             
-            # 2. NETO in RD$ (for gas stations)
-            (r'NETO\s+en\s+RD\$\s*[:\s]*([\d,\.]+)', 2),
+            # 2. TOTAL with ellipsis (table format) - must not be Subtotal
+            (r'(?<!Sub)Total\s*[.:]+\s*([\d,\.]+)', 2),
             
-            # 3. T/Credito (simple invoices)
-            (r'T[/\s]?Cr[ée]dito\s*[:\s]*([\d,\.]+)', 3),
+            # 3. NETO in RD$ (for gas stations)
+            (r'NETO\s+en\s+RD\$\s*[:\s]*([\d,\.]+)', 3),
             
-            # 4. MONTO TOTAL
-            (r'MONTO\s+TOTAL\s*[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)', 4),
+            # 4. T/Credito (simple invoices)
+            (r'T[/\s]?Cr[ée]dito\s*[:\s]*([\d,\.]+)', 4),
             
-            # 5. TOTAL without currency (lowest priority)
-            (r'TOTAL\s*[:\s.]+(?!en\s+(?:d[óo]lar|euro|USD|EUR))([\d,\.]+)', 5),
+            # 5. MONTO TOTAL
+            (r'MONTO\s+TOTAL\s*[:\s]+(?:RD\$|RD|[$])?\s*([\d,\.]+)', 5),
+            
+            # 6. TOTAL without currency (lowest priority) - must not be followed by "en" for foreign currency
+            (r'\bTOTAL\s*[:\s]+(?!en\s+(?:d[óo]lar|euro|USD|EUR))([\d,\.]+)', 6),
         ]
         
         # Patterns to explicitly ignore (foreign currencies)
