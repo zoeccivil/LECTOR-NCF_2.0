@@ -46,8 +46,8 @@ class NCFParser:
         self.invoice.ncf = self._extract_and_validate_ncf(ocr_text)
         self.invoice.tipo_ncf = self._extract_ncf_type(self.invoice.ncf)
         self.invoice.rnc = self._extract_and_validate_rnc(ocr_text)
-        self.invoice.empresa = self._extract_business_name(ocr_text, self.invoice.rnc)
-        self.invoice.fecha = self._extract_date(ocr_text)
+        self.invoice.razon_social = self._extract_business_name(ocr_text, self.invoice.rnc)
+        self.invoice.fecha_emision = self._extract_date(ocr_text)
         self.invoice.montos = self._extract_amounts(ocr_text)
         
         # Log results
@@ -141,6 +141,8 @@ class NCFParser:
         
         CRITICAL: Distinguishes between company RNC (in header) and customer RNC (in body)
         
+        🔧 FIX #4: Added lenient mode for RNC extraction when strict validation fails
+        
         Formatos soportados:
         - 101019921 (9 dígitos sin guiones)
         - 1-01-85004-3 (con guiones)
@@ -168,7 +170,7 @@ class NCFParser:
             r'(?:Registro|Contribuyente)[^\d]{0,20}(\d{9,11})',
         ]
         
-        # Try to find RNC in header first (highest priority)
+        # Try to find RNC in header first (highest priority) - STRICT MODE
         for pattern in patterns:
             matches = re.findall(pattern, header_text, re.IGNORECASE)
             for match in matches:
@@ -198,7 +200,7 @@ class NCFParser:
                     logger.debug(f"RNC validation failed: {rnc_candidate} - {e}")
                     continue
         
-        # STRATEGY 2: Search in full text but SKIP customer RNC lines
+        # STRATEGY 2: Search in full text but SKIP customer RNC lines - STRICT MODE
         for i, line in enumerate(lines):
             # IGNORE lines with customer keywords
             if re.search(r'(Cliente|Comprador|Raz[óo]n\s+Social\s+(?:del\s+)?Cliente|RNC\s+Comprador)', 
@@ -233,7 +235,37 @@ class NCFParser:
                     except Exception as e:
                         continue
         
-        logger.error("❌ No se encontró RNC de la empresa")
+        # 🔧 FIX #4: STRATEGY 3 - LENIENT MODE (without checksum validation)
+        # Only if strict mode failed
+        logger.warning("⚠️ Strict RNC validation failed. Trying lenient mode...")
+        
+        # Try header first (lenient)
+        for pattern in patterns:
+            matches = re.findall(pattern, header_text, re.IGNORECASE)
+            for match in matches:
+                rnc_candidate = match.strip().replace('-', '').replace(' ', '')
+                
+                # Only verify length (9-11 digits) and that it's all digits
+                if 9 <= len(rnc_candidate) <= 11 and rnc_candidate.isdigit():
+                    logger.info(f"✅ RNC LENIENT (header, sin checksum): {rnc_candidate}")
+                    return rnc_candidate
+        
+        # Try full text (lenient, skip customer lines)
+        for i, line in enumerate(lines):
+            if re.search(r'(Cliente|Comprador|Raz[óo]n\s+Social\s+(?:del\s+)?Cliente|RNC\s+Comprador)', 
+                        line, re.IGNORECASE):
+                continue
+            
+            for pattern in patterns:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    rnc_candidate = match.group(1).strip().replace('-', '').replace(' ', '')
+                    
+                    if 9 <= len(rnc_candidate) <= 11 and rnc_candidate.isdigit():
+                        logger.info(f"✅ RNC LENIENT (body, sin checksum): {rnc_candidate}")
+                        return rnc_candidate
+        
+        logger.error("❌ No se encontró RNC de la empresa (strict ni lenient)")
         return None
     
     def _extract_business_name(self, text: str, rnc: Optional[str] = None) -> Optional[str]:
@@ -441,6 +473,9 @@ class NCFParser:
         """
         Extract monetary amounts from invoice text
         
+        🔧 FIX #1: Added pattern for "TOTAL RD$" without colon
+        🔧 FIX #2: Added validation to reject suspiciously small subtotals
+        
         IMPROVEMENTS:
         - Filters invoice numbers to avoid confusion with totals
         - Prioritizes RD$ over foreign currencies
@@ -462,7 +497,8 @@ class NCFParser:
         # Prioritized patterns for TOTAL
         total_patterns = [
             # 1. TOTAL in RD$ (highest priority) - explicit currency
-            # Handle both "Total en RD$: RD$123" and "Total en RD$: 123"
+            # 🔧 FIX #1: Added pattern without colon
+            (r'\bTOTAL\s+RD\$\s*([\d,\.]+)', 1),  # NEW: TOTAL RD$ 1,804.80
             (r'\bTOTAL\s+en\s+RD\$\s*:\s*(?:RD\$)?\s*([\d,\.]+)', 1),
             (r'\bTOTAL\s*[:\s]+RD\$\s*([\d,\.]+)', 1),
             (r'\bTOTAL\s*[:\s]+RD\s+([\d,\.]+)', 1),
@@ -554,7 +590,14 @@ class NCFParser:
             if match:
                 subtotal_str = self._clean_amount(match.group(1))
                 try:
-                    montos.subtotal = float(subtotal_str)
+                    subtotal = float(subtotal_str)
+                    
+                    # 🔧 FIX #2: Validate subtotal (reject if suspiciously small)
+                    if subtotal < 10:
+                        logger.warning(f"Subtotal rechazado (muy pequeño): {subtotal}")
+                        continue
+                    
+                    montos.subtotal = subtotal
                     logger.info(f"✅ Subtotal encontrado: RD${montos.subtotal:,.2f}")
                     break
                 except ValueError:
@@ -636,23 +679,59 @@ class NCFParser:
     
     def _clean_amount(self, amount_str: str) -> str:
         """
+        🔧 FIX #3: Improved to handle European format (dot for thousands, comma for decimal)
+        
         Clean amount string for parsing
         
         Handles:
         - US format: 1,234.56 -> 1234.56
+        - European format: 1.234,56 -> 1234.56 or 2.997,80 -> 2997.80
         - Malformed format: 1.234.56 -> 1234.56 (assumes last dot is decimal)
         
         Note: Dominican invoices typically use US format (comma for thousands, dot for decimal)
         """
-        # Remove commas (thousands separator in US format)
-        amount_str = amount_str.replace(',', '')
+        # Check if European format (dot for thousands, comma for decimal)
+        # Pattern: X.XXX,XX or X,XXX.XX
+        if ',' in amount_str and '.' in amount_str:
+            # Find positions of comma and dot
+            comma_pos = amount_str.rfind(',')
+            dot_pos = amount_str.rfind('.')
+            
+            # If comma comes AFTER dot, it's European format
+            if comma_pos > dot_pos:
+                # European: 2.997,80 -> 2997.80
+                amount_str = amount_str.replace('.', '').replace(',', '.')
+                logger.debug(f"Detected European format, converted to: {amount_str}")
+                return amount_str
+            else:
+                # US format: 1,234.56 -> 1234.56
+                amount_str = amount_str.replace(',', '')
+                return amount_str
         
-        # Handle malformed format with multiple dots (e.g., 1.234.56)
-        # Assume last dot is decimal separator
-        if amount_str.count('.') > 1:
-            parts = amount_str.split('.')
-            # Rejoin all but last (remove dots), then add last with decimal point
-            amount_str = ''.join(parts[:-1]) + '.' + parts[-1]
+        # Single separator - determine which one
+        if ',' in amount_str:
+            # Could be thousands separator (US) or decimal (European)
+            # Heuristic: if there are 3+ digits after comma, it's thousands
+            # If 2 or fewer digits after comma, it's decimal
+            parts = amount_str.split(',')
+            if len(parts) == 2 and len(parts[1]) <= 2:
+                # Likely decimal: 1234,56
+                amount_str = amount_str.replace(',', '.')
+                logger.debug(f"Detected comma as decimal separator: {amount_str}")
+            else:
+                # Likely thousands: 1,234 or 1,234,567
+                amount_str = amount_str.replace(',', '')
+            return amount_str
+        
+        # US format with only dot or multiple dots
+        if '.' in amount_str:
+            # Handle malformed format with multiple dots (e.g., 1.234.56)
+            # Assume last dot is decimal separator
+            if amount_str.count('.') > 1:
+                parts = amount_str.split('.')
+                # Rejoin all but last (remove dots), then add last with decimal point
+                amount_str = ''.join(parts[:-1]) + '.' + parts[-1]
+                logger.debug(f"Fixed malformed dots: {amount_str}")
         
         return amount_str
     
@@ -698,8 +777,8 @@ class NCFParser:
         logger.info(f"NCF:      {self.invoice.ncf or '❌ NO ENCONTRADO'}")
         logger.info(f"Tipo NCF: {self.invoice.tipo_ncf or '❌ NO ENCONTRADO'}")
         logger.info(f"RNC:      {self.invoice.rnc or '❌ NO ENCONTRADO'}")
-        logger.info(f"Empresa:  {self.invoice.empresa or '❌ NO ENCONTRADO'}")
-        logger.info(f"Fecha:    {self.invoice.fecha or '❌ NO ENCONTRADO'}")
+        logger.info(f"Empresa:  {self.invoice.razon_social or '❌ NO ENCONTRADO'}")
+        logger.info(f"Fecha:    {self.invoice.fecha_emision or '❌ NO ENCONTRADO'}")
         logger.info(f"Subtotal: RD${self.invoice.montos.subtotal:,.2f}" if self.invoice.montos.subtotal else "Subtotal: ❌ NO ENCONTRADO")
         logger.info(f"ITBIS:    RD${self.invoice.montos.itbis:,.2f}" if self.invoice.montos.itbis else "ITBIS:    ❌ NO ENCONTRADO")
         logger.info(f"Total:    RD${self.invoice.montos.total:,.2f}" if self.invoice.montos.total else "Total:    ❌ NO ENCONTRADO")
