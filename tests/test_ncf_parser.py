@@ -95,12 +95,12 @@ class TestNCFParser:
         assert abs(amounts.subtotal - 1271.19) < 0.01
     
     def test_clean_amount_us_format(self, parser):
-        """Test cleaning amount in US format"""
+        """Test cleaning amount in US format (comma for thousands, dot for decimal)"""
         amount_str = parser._clean_amount("1,234.56")
         assert float(amount_str) == 1234.56
     
-    def test_clean_amount_european_format(self, parser):
-        """Test cleaning amount in European format"""
+    def test_clean_amount_malformed_format(self, parser):
+        """Test cleaning malformed amount with multiple dots (assumes last is decimal)"""
         amount_str = parser._clean_amount("1.234.56")
         assert float(amount_str) == 1234.56
 

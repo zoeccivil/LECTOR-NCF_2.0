@@ -462,8 +462,8 @@ class NCFParser:
         # Prioritized patterns for TOTAL
         total_patterns = [
             # 1. TOTAL in RD$ (highest priority) - explicit currency
-            # Use \b for word boundary to avoid matching "Subtotal"
-            (r'\bTOTAL\s+en\s+RD\$\s*:\s*RD\$\s*([\d,\.]+)', 1),
+            # Handle both "Total en RD$: RD$123" and "Total en RD$: 123"
+            (r'\bTOTAL\s+en\s+RD\$\s*:\s*(?:RD\$)?\s*([\d,\.]+)', 1),
             (r'\bTOTAL\s*[:\s]+RD\$\s*([\d,\.]+)', 1),
             (r'\bTOTAL\s*[:\s]+RD\s+([\d,\.]+)', 1),
             (r'\bTOTAL\s+A\s+PAGAR\s*[:\s]+(?:RD\$|RD)\s*([\d,\.]+)', 1),
@@ -591,16 +591,23 @@ class NCFParser:
                     itbis_candidate = float(itbis_str)
                     
                     # VALIDATION: Reject if it looks like a percentage
-                    if itbis_candidate < 100:
-                        # Check if this could be a percentage (typically 16-18)
-                        if 15 <= itbis_candidate <= 20:
-                            logger.warning(f"ITBIS rechazado (parece porcentaje): {itbis_candidate}")
+                    # Only reject exact values 16, 18 (common tax percentages)
+                    # Allow legitimate small amounts like RD$18.50, RD$16.75
+                    if itbis_candidate in [16.0, 18.0]:
+                        logger.warning(f"ITBIS rechazado (es porcentaje exacto): {itbis_candidate}")
+                        continue
+                    
+                    # For values between 15-20, check if subtotal exists for validation
+                    if 15 <= itbis_candidate <= 20 and montos.subtotal:
+                        expected_itbis = montos.subtotal * 0.18
+                        if abs(itbis_candidate - expected_itbis) > 1.0:
+                            logger.warning(f"ITBIS rechazado (no coincide con subtotal): {itbis_candidate}")
                             continue
-                        
-                        # Check ratio to total (ITBIS shouldn't be more than 50% of total)
-                        if montos.total and itbis_candidate / montos.total > 0.5:
-                            logger.warning(f"ITBIS rechazado (ratio sospechoso vs total): {itbis_candidate}")
-                            continue
+                    
+                    # Check ratio to total (ITBIS shouldn't be more than 50% of total)
+                    if montos.total and itbis_candidate / montos.total > 0.5:
+                        logger.warning(f"ITBIS rechazado (ratio sospechoso vs total): {itbis_candidate}")
+                        continue
                     
                     montos.itbis = itbis_candidate
                     logger.info(f"✅ ITBIS encontrado (priority {priority}): RD${montos.itbis:,.2f}")
@@ -628,15 +635,23 @@ class NCFParser:
         return montos
     
     def _clean_amount(self, amount_str: str) -> str:
-        """Clean amount string for parsing"""
-        # Remove commas
+        """
+        Clean amount string for parsing
+        
+        Handles:
+        - US format: 1,234.56 -> 1234.56
+        - Malformed format: 1.234.56 -> 1234.56 (assumes last dot is decimal)
+        
+        Note: Dominican invoices typically use US format (comma for thousands, dot for decimal)
+        """
+        # Remove commas (thousands separator in US format)
         amount_str = amount_str.replace(',', '')
         
-        # Handle European format (1.234.567,89 or 1.234,89)
-        # If there are multiple dots and last group has 2 digits, it's likely decimal separator
+        # Handle malformed format with multiple dots (e.g., 1.234.56)
+        # Assume last dot is decimal separator
         if amount_str.count('.') > 1:
             parts = amount_str.split('.')
-            # Rejoin all but last, then add last with decimal point
+            # Rejoin all but last (remove dots), then add last with decimal point
             amount_str = ''.join(parts[:-1]) + '.' + parts[-1]
         
         return amount_str
